@@ -37,19 +37,8 @@ export function getStockout() {
   return request("/api/stockout/sharma-kirana/AMUL_TAAZA_500");
 }
 
-export function getSuppliers(buyerId, sku) {
-  return request(`/api/suppliers/${buyerId}/${sku}`);
-}
-
-export function checkSupply(payload) {
-  return request("/api/supply/check", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function evaluateOffers(payload) {
-  return request("/api/offers/evaluate", {
+export function getRecommendation(payload) {
+  return request("/api/recommendations", {
     method: "POST",
     body: JSON.stringify(payload),
   });

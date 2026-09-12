@@ -1,12 +1,10 @@
 import { useEffect, useState } from "react";
 
 import {
-  checkSupply,
-  evaluateOffers,
   executeRescue,
   getDashboard,
+  getRecommendation,
   getStockout,
-  getSuppliers,
   reserveInventory,
   resetDemo,
 } from "./api.js";
@@ -14,10 +12,10 @@ import {
 const BUYER_ID = "sharma-kirana";
 const SKU = "AMUL_TAAZA_500";
 const SEARCH_STEPS = [
-  "Detecting shortage",
-  "Discovering nearby suppliers",
-  "Evaluating safe surplus",
-  "Comparing rescue offers",
+  "Sending rescue request",
+  "Buyer agent defining need",
+  "Supplier agents checking stock",
+  "Rescue agent ranking offers",
 ];
 
 const money = new Intl.NumberFormat("en-IN", {
@@ -25,9 +23,6 @@ const money = new Intl.NumberFormat("en-IN", {
   currency: "INR",
   maximumFractionDigits: 0,
 });
-
-const wait = (milliseconds) =>
-  new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
 function Metric({ label, value, note, accent }) {
   return (
@@ -48,8 +43,8 @@ function SearchProgress({ activeStep }) {
       <p className="eyebrow">Rescue network</p>
       <h2>Finding the fastest safe match</h2>
       <p className="workflow-copy">
-        Supplier inventory stays private. Only eligible rescue quantities are
-        returned.
+        Phinite is coordinating the buyer, supplier, and rescue agents. Supplier
+        inventory stays private.
       </p>
       <ol className="workflow-steps">
         {SEARCH_STEPS.map((step, index) => (
@@ -80,7 +75,10 @@ function OfferCard({ offer, recommended }) {
           <p className="eyebrow">{recommended ? "Best rescue match" : "Alternative"}</p>
           <h3>{offer.supplier_name}</h3>
         </div>
-        {recommended && <span className="recommendation-badge">Recommended</span>}
+        <div className="offer-badges">
+          {recommended && <span className="recommendation-badge">Recommended</span>}
+          <span className="offer-score">Score {offer.score}</span>
+        </div>
       </div>
       <div className="offer-price">
         <strong>{money.format(offer.total_cost)}</strong>
@@ -127,6 +125,7 @@ export default function App() {
   const [dashboard, setDashboard] = useState(null);
   const [stockout, setStockout] = useState(null);
   const [offers, setOffers] = useState([]);
+  const [recommendation, setRecommendation] = useState(null);
   const [selectedOffer, setSelectedOffer] = useState(null);
   const [result, setResult] = useState(null);
   const [activeStep, setActiveStep] = useState(0);
@@ -169,52 +168,37 @@ export default function App() {
     setError(null);
     setActiveStep(0);
     setView("searching");
+    const progressTimer = window.setInterval(
+      () => setActiveStep((step) => Math.min(step + 1, SEARCH_STEPS.length - 1)),
+      900,
+    );
     try {
-      const stockoutData = await getStockout();
-      setStockout(stockoutData);
-      setActiveStep(1);
-      await wait(320);
-
-      const supplierIds = await getSuppliers(BUYER_ID, SKU);
-      if (supplierIds.length === 0) {
-        setView("no_offer");
-        return;
-      }
-      setActiveStep(2);
-      await wait(320);
-
-      const supplyOffers = await Promise.all(
-        supplierIds.map((supplierId) =>
-          checkSupply({
-            supplier_id: supplierId,
-            sku: SKU,
-            requested_quantity: stockoutData.shortage,
-            deadline_minutes: stockoutData.stockout_in_minutes,
-          }),
-        ),
-      );
-      setActiveStep(3);
-      await wait(320);
-
-      const rankedOffers = await evaluateOffers({
-        buyer_id: BUYER_ID,
+      const response = await getRecommendation({
+        merchant_id: BUYER_ID,
         sku: SKU,
-        requested_quantity: stockoutData.shortage,
-        offers: supplyOffers,
       });
-      if (rankedOffers.length === 0) {
+      if (response.evaluated_offers.length === 0) {
         setView("no_offer");
         return;
       }
-      setOffers(rankedOffers);
-      setSelectedOffer(rankedOffers[0]);
+      const selected = response.evaluated_offers.find(
+        (offer) => offer.supplier_id === response.top_supplier_id,
+      );
+      if (!selected) {
+        throw new Error("Phinite did not return its selected supplier offer.");
+      }
+      setRecommendation(response);
+      setOffers(response.evaluated_offers);
+      setSelectedOffer(selected);
       setView("recommendation");
     } catch (requestError) {
       setError({
-        title: "Rescue search interrupted",
+        title: "Phinite recommendation unavailable",
         message: requestError.message,
       });
       setView("error");
+    } finally {
+      window.clearInterval(progressTimer);
     }
   }
 
@@ -223,10 +207,10 @@ export default function App() {
     let reservation;
     try {
       reservation = await reserveInventory({
-        supplier_id: selectedOffer.supplier_id,
+        supplier_id: recommendation.top_supplier_id,
         buyer_id: BUYER_ID,
         sku: SKU,
-        quantity: selectedOffer.quantity,
+        quantity: recommendation.top_quantity,
       });
     } catch (requestError) {
       setError({
@@ -271,6 +255,7 @@ export default function App() {
     try {
       await resetDemo();
       setOffers([]);
+      setRecommendation(null);
       setSelectedOffer(null);
       setResult(null);
       setError(null);
@@ -283,17 +268,6 @@ export default function App() {
     }
   }
 
-  const alternative = offers.find(
-    (offer) => offer.supplier_id !== selectedOffer?.supplier_id,
-  );
-  const pricePremium =
-    selectedOffer && alternative
-      ? selectedOffer.total_cost - alternative.total_cost
-      : 0;
-  const minutesFaster =
-    selectedOffer && alternative
-      ? alternative.eta_minutes - selectedOffer.eta_minutes
-      : 0;
   const busy = view === "searching" || view === "executing" || resetting;
 
   return (
@@ -396,23 +370,27 @@ export default function App() {
 
         {view === "searching" && <SearchProgress activeStep={activeStep} />}
 
-        {view === "recommendation" && selectedOffer && (
+        {view === "recommendation" && selectedOffer && recommendation && (
           <section className="recommendation-section">
             <div className="section-heading">
               <div>
-                <p className="eyebrow">Backend-ranked recommendation</p>
+                <p className="eyebrow">Phinite recommendation</p>
                 <h2>Rescue stock found</h2>
-                <p>Both suppliers can help. Speed creates the safer outcome.</p>
+                <p>Supplier agents returned eligible offers. Phinite selected the safest match.</p>
               </div>
               <div className="window-pill">
-                <span>{stockout.stockout_in_minutes} min</span>
+                <span>{recommendation.deadline_minutes} min</span>
                 <small>stockout window</small>
               </div>
             </div>
 
             <div className="offer-grid">
-              {offers.map((offer, index) => (
-                <OfferCard key={offer.supplier_id} offer={offer} recommended={index === 0} />
+              {offers.map((offer) => (
+                <OfferCard
+                  key={offer.supplier_id}
+                  offer={offer}
+                  recommended={offer.supplier_id === recommendation.top_supplier_id}
+                />
               ))}
             </div>
 
@@ -421,9 +399,7 @@ export default function App() {
                 <span className="decision-icon" aria-hidden="true">✓</span>
                 <p>
                   <strong>{selectedOffer.supplier_name} is the safest match.</strong>
-                  {pricePremium > 0 && minutesFaster > 0
-                    ? ` ${money.format(pricePremium)} more, but ${minutesFaster} minutes faster—creating a much larger buffer before stockout.`
-                    : " It has the highest eligible score returned by the backend."}
+                  {` ${recommendation.recommendation_explanation}`}
                 </p>
               </div>
               <button className="button button--primary" onClick={handleAccept}>
