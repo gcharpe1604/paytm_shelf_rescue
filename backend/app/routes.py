@@ -1,13 +1,24 @@
-from fastapi import APIRouter, HTTPException
+from typing import Annotated
+
+import httpx
+from fastapi import APIRouter, Depends, HTTPException
 
 from .demo_data import build_demo_store
 from .payments import MockPaymentProvider, execute_rescue
+from .phinite import (
+    PhiniteConfigurationError,
+    PhiniteResponseError,
+    get_phinite_http_client,
+    request_phinite_recommendation,
+)
 from .rescue import check_supply, detect_stockout, discover_suppliers, evaluate_offers
 from .schemas import (
     DashboardResponse,
     EvaluateOffersRequest,
     ExecuteRescueRequest,
     ExecuteRescueResponse,
+    RecommendationRequest,
+    RecommendationResponse,
     Reservation,
     ReservationRequest,
     ScoredOffer,
@@ -123,3 +134,16 @@ def post_execute_rescue(payload: ExecuteRescueRequest) -> ExecuteRescueResponse:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ExecuteRescueResponse(reservation=reservation, payment=payment)
+
+
+@router.post("/recommendations", response_model=RecommendationResponse)
+async def post_recommendation(
+    payload: RecommendationRequest,
+    client: Annotated[httpx.AsyncClient, Depends(get_phinite_http_client)],
+) -> RecommendationResponse:
+    try:
+        return await request_phinite_recommendation(payload, client)
+    except PhiniteConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except PhiniteResponseError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc

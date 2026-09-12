@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 
 class Merchant(BaseModel):
@@ -114,3 +114,59 @@ class DashboardResponse(BaseModel):
 class ExecuteRescueResponse(BaseModel):
     reservation: Reservation
     payment: PaymentRecord
+
+
+class RecommendationRequest(BaseModel):
+    merchant_id: str = Field(min_length=1)
+    sku: str = Field(min_length=1)
+
+
+class RecommendationResponse(BaseModel):
+    workflow_id: str = Field(min_length=1)
+    merchant_id: str = Field(min_length=1)
+    sku: str = Field(min_length=1)
+    requested_quantity: int = Field(gt=0)
+    deadline_minutes: int = Field(gt=0)
+    evaluated_offers: list[ScoredOffer] = Field(min_length=1)
+    top_supplier_id: str = Field(min_length=1)
+    top_quantity: int = Field(gt=0)
+    top_total_cost: int = Field(ge=0)
+    top_eta_minutes: int = Field(ge=0)
+    top_expected_sales_protected: int = Field(ge=0)
+    top_score: float
+    recommendation_explanation: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def selected_offer_matches_summary(self) -> "RecommendationResponse":
+        selected = next(
+            (
+                offer
+                for offer in self.evaluated_offers
+                if offer.supplier_id == self.top_supplier_id
+            ),
+            None,
+        )
+        if selected is None or not selected.eligible:
+            raise ValueError("Top supplier must be an eligible evaluated offer")
+        if any(
+            value < 0
+            for offer in self.evaluated_offers
+            for value in (
+                offer.quantity,
+                offer.unit_price,
+                offer.eta_minutes,
+                offer.total_cost,
+                offer.expected_sales_protected,
+            )
+        ):
+            raise ValueError("Offer values cannot be negative")
+        if (
+            self.top_quantity != selected.quantity
+            or self.top_total_cost != selected.total_cost
+            or self.top_eta_minutes != selected.eta_minutes
+            or self.top_expected_sales_protected
+            != selected.expected_sales_protected
+            or self.top_score != selected.score
+        ):
+            raise ValueError("Top-offer summary does not match evaluated offer")
+        return self
